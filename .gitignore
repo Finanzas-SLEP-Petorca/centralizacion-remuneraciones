@@ -1,0 +1,28 @@
+# Salidas generadas (Excel y CSV de resultados)
+salidas/
+
+# Archivos de entrada temporales (no se versionan)
+*.xls
+*.pdf
+
+# Caché de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Configuración local de Claude
+.claude/
+
+# Archivos temporales de Office
+~$*
