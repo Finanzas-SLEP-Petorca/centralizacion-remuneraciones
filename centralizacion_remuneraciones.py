@@ -375,45 +375,98 @@ def load_mapping_workbook(path: Path) -> Dict[Tuple[str, str, str, str], Dict[st
     return mapping
 
 
-def build_mapping_rows(
+def collect_mapping_candidates(
     debit_detail: List[Tuple[str, str, str, str, str, float]],
     discount_rows: List[Tuple[str, str, str, float]],
     employer_rows: List[Tuple[str, str, str, float]],
     existing_budget_map: Dict[Tuple[str, str], str],
     pdf_budget_map: Dict[str, Dict[str, str]],
-    current_mapping: Dict[Tuple[str, str, str, str], Dict[str, str]],
-) -> List[Dict[str, str]]:
-    rows: Dict[Tuple[str, str, str, str], Dict[str, str]] = {}
+) -> Dict[Tuple[str, str, str, str], Dict[str, str]]:
+    """Recolecta los códigos presentes en el mes actual sin tocar el maestro."""
+    candidates: Dict[Tuple[str, str, str, str], Dict[str, str]] = {}
 
-    def upsert(lado: str, origen: str, tipo_cargo: str, codigo: str, descripcion: str, sugerida: str = ""):
-        key = (lado, origen, tipo_cargo, codigo)
-        current = current_mapping.get(key, {})
-        rows[key] = {
-            "lado": lado,
-            "origen": origen,
-            "tipo_cargo": tipo_cargo,
-            "codigo": codigo,
-            "descripcion": descripcion,
-            "cuenta_contable": current.get("cuenta_contable", ""),
-            "cuenta_presupuestaria_sugerida": current.get("cuenta_presupuestaria_sugerida") or sugerida,
-            "glosa_sugerida": current.get("glosa_sugerida", descripcion),
-            "observacion": current.get("observacion", ""),
-        }
-
-    for _, project, tipo_cargo, codigo, descripcion, _ in debit_detail:
+    for _, _project, tipo_cargo, codigo, descripcion, _ in debit_detail:
+        key = ("DEBE", "GASTO_FINANCIAMIENTO", tipo_cargo, codigo)
+        if key in candidates:
+            continue
         suggested = pdf_budget_map.get(codigo, {}).get(tipo_cargo, "")
         if not suggested:
             suggested = existing_budget_map.get((infer_section(tipo_cargo), descripcion.upper()), "")
-        upsert("DEBE", "GASTO_FINANCIAMIENTO", tipo_cargo, codigo, descripcion, suggested)
+        candidates[key] = {
+            "lado": "DEBE",
+            "origen": "GASTO_FINANCIAMIENTO",
+            "tipo_cargo": tipo_cargo,
+            "codigo": codigo,
+            "descripcion": descripcion,
+            "cuenta_contable": "",
+            "cuenta_presupuestaria_sugerida": suggested,
+            "glosa_sugerida": descripcion,
+            "observacion": "",
+        }
 
     for _, codigo, descripcion, _ in discount_rows:
-        upsert("HABER", "DESCUENTO", "", codigo, descripcion)
+        key = ("HABER", "DESCUENTO", "", codigo)
+        if key not in candidates:
+            candidates[key] = {
+                "lado": "HABER",
+                "origen": "DESCUENTO",
+                "tipo_cargo": "",
+                "codigo": codigo,
+                "descripcion": descripcion,
+                "cuenta_contable": "",
+                "cuenta_presupuestaria_sugerida": "",
+                "glosa_sugerida": descripcion,
+                "observacion": "",
+            }
 
     for _, codigo, descripcion, _ in employer_rows:
-        upsert("HABER", "APORTE_PATRONAL", "", codigo, descripcion)
+        key = ("HABER", "APORTE_PATRONAL", "", codigo)
+        if key not in candidates:
+            candidates[key] = {
+                "lado": "HABER",
+                "origen": "APORTE_PATRONAL",
+                "tipo_cargo": "",
+                "codigo": codigo,
+                "descripcion": descripcion,
+                "cuenta_contable": "",
+                "cuenta_presupuestaria_sugerida": "",
+                "glosa_sugerida": descripcion,
+                "observacion": "",
+            }
 
-    upsert("HABER", "LIQUIDO", "", LIQUIDO_CODE, "LIQUIDO A PAGO")
-    return [rows[key] for key in sorted(rows)]
+    key = ("HABER", "LIQUIDO", "", LIQUIDO_CODE)
+    candidates.setdefault(
+        key,
+        {
+            "lado": "HABER",
+            "origen": "LIQUIDO",
+            "tipo_cargo": "",
+            "codigo": LIQUIDO_CODE,
+            "descripcion": "LIQUIDO A PAGO",
+            "cuenta_contable": "",
+            "cuenta_presupuestaria_sugerida": "",
+            "glosa_sugerida": "LIQUIDO A PAGO",
+            "observacion": "",
+        },
+    )
+    return candidates
+
+
+def merge_into_master(
+    master: Dict[Tuple[str, str, str, str], Dict[str, str]],
+    candidates: Dict[Tuple[str, str, str, str], Dict[str, str]],
+) -> Tuple[List[Dict[str, str]], int]:
+    """
+    Fusiona candidatos en el maestro. Solo agrega claves que no existen.
+    Nunca modifica entradas ya presentes. Retorna (filas ordenadas, cantidad nuevas).
+    """
+    merged = dict(master)
+    new_count = 0
+    for key, entry in candidates.items():
+        if key not in merged:
+            merged[key] = entry
+            new_count += 1
+    return [merged[k] for k in sorted(merged)], new_count
 
 
 def write_mapping_csv(path: Path, rows: List[Dict[str, str]]):
@@ -473,10 +526,11 @@ def write_mapping_workbook(path: Path, rows: List[Dict[str, str]]):
     ws.freeze_panes = "A2"
 
     guia = wb.create_sheet("ComoUsarlo")
-    guia["A1"] = "1. Completa o corrige la columna cuenta_contable en la hoja CompletarAqui."
-    guia["A2"] = "2. Si aparece un haber o descuento nuevo, vuelve a ejecutar el script: se agregará como COMPLETAR."
-    guia["A3"] = "3. Si prefieres trabajar en CSV, este Excel se regenera desde mapeo_cuentas.csv."
-    guia["A4"] = "4. La cuenta_presupuestaria_sugerida fue precargada desde Cuentas contables.pdf cuando fue posible."
+    guia["A1"] = "Este archivo es el MAPEO MAESTRO de cuentas contables. Sus entradas nunca se borran ni sobreescriben."
+    guia["A2"] = "1. Completa la columna cuenta_contable en filas con estado COMPLETAR y guarda este archivo."
+    guia["A3"] = "2. Al procesar un nuevo mes, solo se agregan filas nuevas (códigos no vistos antes). Las existentes no cambian."
+    guia["A4"] = "3. Si un código cambia de cuenta contable, edita directamente la fila correspondiente en este archivo."
+    guia["A5"] = "4. La cuenta_presupuestaria_sugerida se precarga automáticamente cuando se detecta en archivos de referencia."
     autosize(guia)
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -830,7 +884,12 @@ def run_pipeline(
     mapeo_excel: str,
     title_text: str,
     asiento_files: List[str] | None = None,
-):
+) -> Tuple[Path, Path, Path, int, int]:
+    """
+    Retorna (salida, mapeo_csv, mapeo_excel, nuevos_en_maestro, pendientes_sin_cuenta).
+    El archivo mapeo_excel actúa como maestro acumulativo: solo se agregan entradas nuevas,
+    las existentes nunca se modifican.
+    """
     process_data = {item["process"]: item for item in (aggregate_process(path) for path in process_files)}
     gasto_data = {item["process"]: item for item in (aggregate_gasto(path) for path in gasto_files)}
     central_data = {
@@ -846,19 +905,21 @@ def run_pipeline(
     discount_rows = [row for item in process_data.values() for row in item["discount_credit_rows"]]
     employer_rows = [row for item in process_data.values() for row in item["employer_credit_rows"]]
 
-    mapping_path = Path(mapeo)
     mapping_excel_path = Path(mapeo_excel)
-    current_mapping = load_mapping_workbook(mapping_excel_path) or load_mapping_csv(mapping_path)
-    mapping_rows = build_mapping_rows(
-        debit_detail,
-        discount_rows,
-        employer_rows,
-        budget_map,
-        pdf_budget_map,
-        current_mapping,
+    mapping_path = Path(mapeo)
+
+    master_mapping = load_mapping_workbook(mapping_excel_path) or load_mapping_csv(mapping_path)
+    candidates = collect_mapping_candidates(
+        debit_detail, discount_rows, employer_rows, budget_map, pdf_budget_map
     )
-    write_mapping_csv(mapping_path, mapping_rows)
-    write_mapping_workbook(mapping_excel_path, mapping_rows)
+    mapping_rows, new_count = merge_into_master(master_mapping, candidates)
+
+    if new_count > 0 or not mapping_excel_path.exists():
+        write_mapping_csv(mapping_path, mapping_rows)
+        write_mapping_workbook(mapping_excel_path, mapping_rows)
+
+    pending_count = sum(1 for r in mapping_rows if not r["cuenta_contable"])
+
     build_workbook(
         Path(salida),
         process_data,
@@ -869,7 +930,7 @@ def run_pipeline(
         title_text=title_text,
     )
 
-    return Path(salida).resolve(), mapping_path.resolve(), mapping_excel_path.resolve()
+    return Path(salida).resolve(), mapping_path.resolve(), mapping_excel_path.resolve(), new_count, pending_count
 
 
 def main():

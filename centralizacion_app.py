@@ -5,8 +5,6 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from openpyxl import load_workbook
-
 from centralizacion_remuneraciones import run_pipeline
 
 
@@ -157,7 +155,8 @@ class App(tk.Tk):
 
         default_output = Path(__file__).resolve().parent / "salidas"
         self.salida_dir.var.set(str(default_output))
-        self.mapeo_excel.var.set(str(default_output / "mapeo_cuentas_app.xlsx"))
+        master_default = Path(__file__).resolve().parent / "mapeo_maestro.xlsx"
+        self.mapeo_excel.var.set(str(master_default))
 
     def append_log(self, text: str):
         self.log.insert(tk.END, text + "\n")
@@ -187,7 +186,7 @@ class App(tk.Tk):
             mapping_excel = Path(self.mapeo_excel.var.get().strip() or output_dir / "mapeo_cuentas_app.xlsx")
             mapping_csv = mapping_excel.with_suffix(".csv")
 
-            salida, mapping_csv_path, mapping_xlsx_path = run_pipeline(
+            salida, mapping_csv_path, mapping_xlsx_path, new_count, pending = run_pipeline(
                 process_files=self.maestros.paths,
                 gasto_files=self.gastos.paths,
                 central_files=self.centrales.paths,
@@ -199,36 +198,43 @@ class App(tk.Tk):
                 asiento_files=self.asientos.paths,
             )
 
-            wb = load_workbook(mapping_xlsx_path, data_only=True)
-            ws = wb["CompletarAqui"]
-            pending = sum(1 for row in ws.iter_rows(min_row=2, values_only=True) if not row[6])
-
             self.after(
                 0,
                 lambda: self._generation_done(
                     salida=str(salida),
                     mapping_xlsx=str(mapping_xlsx_path),
                     mapping_csv=str(mapping_csv_path),
+                    new_count=new_count,
                     pending=pending,
                 ),
             )
         except Exception as exc:
             self.after(0, lambda exc=exc: self._generation_failed(exc))
 
-    def _generation_done(self, salida: str, mapping_xlsx: str, mapping_csv: str, pending: int):
+    def _generation_done(self, salida: str, mapping_xlsx: str, mapping_csv: str, new_count: int, pending: int):
         self.generate_btn.configure(state="normal")
         self.status_var.set("Generacion completada.")
         self.append_log(f"Archivo generado: {salida}")
-        self.append_log(f"Mapeo Excel: {mapping_xlsx}")
-        self.append_log(f"Mapeo CSV: {mapping_csv}")
-        self.append_log(f"Cuentas pendientes: {pending}")
-        if pending:
+        self.append_log(f"Mapeo maestro: {mapping_xlsx}")
+        if new_count:
+            self.append_log(f"Codigos nuevos agregados al maestro: {new_count}")
+        else:
+            self.append_log("Sin codigos nuevos — el mapeo maestro no fue modificado.")
+        self.append_log(f"Cuentas pendientes de completar: {pending}")
+        if new_count and pending:
             messagebox.showinfo(
                 "Generacion completada",
-                f"Se generó la centralizacion.\nQuedaron {pending} cuentas por completar en:\n{mapping_xlsx}",
+                f"Centralizacion generada.\n\n"
+                f"Se agregaron {new_count} código(s) nuevo(s) al mapeo maestro.\n"
+                f"Quedan {pending} cuenta(s) por completar en:\n{mapping_xlsx}",
+            )
+        elif pending:
+            messagebox.showinfo(
+                "Generacion completada",
+                f"Centralizacion lista.\n\nQuedan {pending} cuenta(s) pendientes en el mapeo maestro:\n{mapping_xlsx}",
             )
         else:
-            messagebox.showinfo("Generacion completada", f"Centralizacion lista en:\n{salida}")
+            messagebox.showinfo("Generacion completada", f"Centralizacion lista. Todas las cuentas mapeadas.\n\n{salida}")
 
     def _generation_failed(self, exc: Exception):
         self.generate_btn.configure(state="normal")
