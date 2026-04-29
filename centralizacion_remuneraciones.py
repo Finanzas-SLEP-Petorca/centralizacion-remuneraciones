@@ -556,12 +556,63 @@ def recalculate_fuentes(
 ) -> List[List[object]]:
     """
     Recalcula la distribución por fuente de financiamiento usando el diccionario.
+
+    Principio: CAS Chile ya calcula correctamente la proporción de cada haber por
+    las horas reales de cada RUT en cada proyecto (InformeGastoFinanciamiento).
+    El problema es que asigna el haber a la fuente equivocada.
+
+    Algoritmo para fuentes CAS (GENERAL/SEP/PIE):
+      - Tomamos los montos que CAS Chile puso en los proyectos ELEGIBLES para este
+        haber y los usamos como pesos para redistribuir TODO el monto (incluido el
+        que CAS puso en proyectos NO elegibles).
+      - Ejemplo: haber elegible solo en [GENERAL, SEP]
+        InformeGasto: NORMAL=1000, SEP=500, PIE=300 → total=1800
+        peso_NORMAL = 1000 / (1000+500) = 0.667 → corregido_NORMAL = 1800*0.667 = 1200
+        peso_SEP    = 500  / (1000+500) = 0.333 → corregido_SEP    = 1800*0.333 =  600
+        Si ningún elegible tiene monto en InformeGasto → reparte equitativamente.
+
+    Para fuentes no-CAS (APORTE FISCAL / FAEP):
+      - Si el haber es exclusivo de fuentes no-CAS, el total completo va allí.
+      - Usa jornada_map como fallback de ponderación si hay más de una fuente no-CAS.
+
     Retorna filas para la hoja FuenteCorregida:
     [Proceso, Centro_Costo, Tipo_Cargo, Codigo, Descripcion,
      Fuente, Monto_CAS, Monto_Corregido, Diferencia]
     """
     rows = []
     _default_flags = {f: 0 for f in FUENTE_COLS}
+
+    def _distribute_with_weights(
+        total: float,
+        proyectos: List[str],
+        weights: Dict[str, float],
+    ) -> Dict[str, float]:
+        """
+        Distribuye `total` entre `proyectos` proporcional a `weights`.
+        Absorbe el residuo de redondeo en el proyecto con mayor peso.
+        """
+        w_sum = sum(weights.get(p, 0.0) for p in proyectos)
+        result: Dict[str, float] = {}
+        if w_sum <= 0:
+            # Sin pesos → reparto equitativo
+            share = round(total / len(proyectos), 2) if proyectos else 0.0
+            for p in proyectos:
+                result[p] = share
+            # Absorber redondeo en el primero
+            if proyectos:
+                result[proyectos[0]] = round(total - sum(result[p] for p in proyectos[1:]), 2)
+            return result
+        # Orden descendente por peso para que el mayor absorba el residuo de redondeo
+        ordered = sorted(proyectos, key=lambda p: -weights.get(p, 0.0))
+        allocated = 0.0
+        for i, p in enumerate(ordered):
+            if i == len(ordered) - 1:
+                result[p] = round(total - allocated, 2)
+            else:
+                share = round(total * weights.get(p, 0.0) / w_sum, 2)
+                result[p] = share
+                allocated += share
+        return result
 
     for process, gdata in gasto_data.items():
         cas_amounts: Dict[Tuple[str, str, str, str, str], float] = defaultdict(float)
@@ -587,23 +638,31 @@ def recalculate_fuentes(
             eligible_new = [f for f in eligible if FUENTE_TO_PROYECTO[f] not in _CAS_PROYECTOS]
 
             corrected: Dict[str, float] = {}
-            if eligible_new and not eligible_cas:
-                share = round(total / len(eligible_new), 2)
-                for f in eligible_new:
-                    corrected[FUENTE_TO_PROYECTO[f]] = share
-            else:
-                escalafon = _TIPO_TO_ESCALAFON.get(normalized_key(tipo_cargo), tipo_cargo)
-                jornadas = jornada_map.get((cc, escalafon), {})
+
+            if eligible_cas:
+                # ── Fuentes CAS: usar proporciones del InformeGasto (= horas RUT) ──
                 eligible_proyectos = [FUENTE_TO_PROYECTO[f] for f in eligible_cas]
-                elig_jorn = {p: jornadas.get(p, 0.0) for p in eligible_proyectos}
-                total_jorn = sum(elig_jorn.values())
-                if total_jorn > 0:
-                    for p in eligible_proyectos:
-                        corrected[p] = round(total * elig_jorn[p] / total_jorn, 2)
+                # Pesos = montos que CAS ya puso en los proyectos ELEGIBLES
+                weights = {
+                    p: cas_amounts.get((cc, tipo_cargo, codigo, descripcion, p), 0.0)
+                    for p in eligible_proyectos
+                }
+                corrected.update(_distribute_with_weights(total, eligible_proyectos, weights))
+
+            if eligible_new and not eligible_cas:
+                # ── Solo fuentes no-CAS (APORTE FISCAL / FAEP) ──────────────────
+                non_cas_proyectos = [FUENTE_TO_PROYECTO[f] for f in eligible_new]
+                if len(non_cas_proyectos) == 1:
+                    corrected[non_cas_proyectos[0]] = round(total, 2)
                 else:
-                    share = round(total / len(eligible_proyectos), 2)
-                    for p in eligible_proyectos:
-                        corrected[p] = share
+                    # Usar jornada como ponderador entre fuentes no-CAS
+                    escalafon = _TIPO_TO_ESCALAFON.get(normalized_key(tipo_cargo), tipo_cargo)
+                    jornadas = jornada_map.get((cc, escalafon), {})
+                    weights_nc = {p: jornadas.get(p, 0.0) for p in non_cas_proyectos}
+                    corrected.update(_distribute_with_weights(total, non_cas_proyectos, weights_nc))
+
+            # Si eligible_new Y eligible_cas: el total ya está cubierto en CAS;
+            # las fuentes no-CAS quedan en 0 (CAS Chile no separa esos fondos).
 
             all_fuentes: set[str] = set()
             for k5 in cas_amounts:
