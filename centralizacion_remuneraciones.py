@@ -128,8 +128,8 @@ def find_header_index(headers: List[str], *candidates: str) -> int:
     raise KeyError(f"No se encontró encabezado para {candidates!r}")
 
 
-def aggregate_process(path: str):
-    process = process_name_from_file(path)
+def aggregate_process(path: str, process_name_override: str = ""):
+    process = process_name_override or process_name_from_file(path)
     hab_sheet = open_sheet(path, sheet_name="Haberes")
     des_sheet = open_sheet(path, sheet_name="Descuentos")
     hab_headers, hab_rows = rows_from_sheet(hab_sheet)
@@ -199,8 +199,8 @@ def aggregate_process(path: str):
     }
 
 
-def aggregate_gasto(path: str):
-    process = process_name_from_file(path)
+def aggregate_gasto(path: str, process_name_override: str = ""):
+    process = process_name_override or process_name_from_file(path)
     sheet = open_sheet(path, sheet_index=0)
     headers, rows = rows_from_sheet(sheet)
     code_idx = find_header_index(headers, "Código", "Codigo")
@@ -244,8 +244,8 @@ def aggregate_gasto(path: str):
     }
 
 
-def aggregate_asiento_reference(path: str):
-    process = process_name_from_file(path)
+def aggregate_asiento_reference(path: str, process_name_override: str = ""):
+    process = process_name_override or process_name_from_file(path)
     book = safe_open_workbook(path)
     totals = {"Haberes": 0.0, "Descuentos": 0.0}
     for sheet_name in ("Haberes", "Descuentos"):
@@ -257,8 +257,8 @@ def aggregate_asiento_reference(path: str):
     return {"process": process, "asiento_haberes": totals["Haberes"], "asiento_descuentos": totals["Descuentos"]}
 
 
-def aggregate_central(path: str):
-    process = process_name_from_file(path)
+def aggregate_central(path: str, process_name_override: str = ""):
+    process = process_name_override or process_name_from_file(path)
     sheet = open_sheet(path, sheet_index=0)
     debe = 0.0
     haber = 0.0
@@ -443,6 +443,54 @@ def load_diccionario(
         fallback[codigo] = {f: max(existing.get(f, 0), flags[f]) for f in FUENTE_COLS}
 
     return primary, fallback
+
+
+def update_diccionario(path: str, new_entries: List[Dict[str, str]]) -> int:
+    """
+    Agrega haberes nuevos al diccionario con todos los flags en 0.
+    Nunca modifica filas existentes. Retorna la cantidad de filas agregadas.
+    """
+    if not path or not Path(path).exists() or not new_entries:
+        return 0
+    from openpyxl import load_workbook as _lw
+
+    wb = _lw(path)
+    ws = wb.active
+    raw_headers = [normalize_text(c.value) for c in ws[1]]
+    col_idx = {normalized_key(h): i for i, h in enumerate(raw_headers)}
+    codigo_col = col_idx.get("codigo")
+    if codigo_col is None:
+        return 0
+
+    existing: set[str] = set()
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        rc = row[codigo_col]
+        if rc is not None:
+            existing.add(str(int(rc)) if isinstance(rc, float) else normalize_text(str(rc)))
+
+    # Detect how many columns the sheet has to fill with the right structure
+    ncols = ws.max_column
+    added = 0
+    for entry in new_entries:
+        code = entry["codigo"]
+        if code in existing:
+            continue
+        # Row: Código, Alias, Descripción, Codigo SUPEREDUC, GENERAL, SEP, PIE, APORTE FISCAL, FAEP, ...rest 0
+        new_row: List[object] = [None] * ncols
+        new_row[col_idx.get("codigo", 0)] = int(code) if code.isdigit() else code
+        if "descripcion" in col_idx:
+            new_row[col_idx["descripcion"]] = entry.get("descripcion", "")
+        for fuente in FUENTE_COLS:
+            cidx = col_idx.get(normalized_key(fuente))
+            if cidx is not None:
+                new_row[cidx] = 0
+        ws.append(new_row)
+        existing.add(code)
+        added += 1
+
+    if added > 0:
+        wb.save(path)
+    return added
 
 
 def build_jornada_map(maestro_paths: List[str]) -> Dict[Tuple[str, str], Dict[str, float]]:
@@ -1074,19 +1122,28 @@ def run_pipeline(
     title_text: str,
     asiento_files: List[str] | None = None,
     diccionario_path: str = "",
+    process_name_map: Dict[str, str] | None = None,
 ) -> Tuple[Path, Path, Path, int, int]:
     """
     Retorna (salida, mapeo_csv, mapeo_excel, nuevos_en_maestro, pendientes_sin_cuenta).
-    El archivo mapeo_excel actúa como maestro acumulativo: solo se agregan entradas nuevas,
-    las existentes nunca se modifican.
+    process_name_map: {ruta_archivo: nombre_proceso} — permite forzar el proceso de cada archivo.
     """
-    process_data = {item["process"]: item for item in (aggregate_process(path) for path in process_files)}
-    gasto_data = {item["process"]: item for item in (aggregate_gasto(path) for path in gasto_files)}
+    pnm = process_name_map or {}
+    process_data = {
+        item["process"]: item
+        for item in (aggregate_process(p, pnm.get(p, "")) for p in process_files)
+    }
+    gasto_data = {
+        item["process"]: item
+        for item in (aggregate_gasto(p, pnm.get(p, "")) for p in gasto_files)
+    }
     central_data = {
-        item["process"]: item for item in (aggregate_central(path) for path in (central_files or []))
+        item["process"]: item
+        for item in (aggregate_central(p, pnm.get(p, "")) for p in (central_files or []))
     }
     asiento_data = {
-        item["process"]: item for item in (aggregate_asiento_reference(path) for path in (asiento_files or []))
+        item["process"]: item
+        for item in (aggregate_asiento_reference(p, pnm.get(p, "")) for p in (asiento_files or []))
     }
     budget_map = parse_existing_budget_map(central_files or [])
     pdf_budget_map = extract_pdf_budget_map(cuentas_pdf)
@@ -1113,6 +1170,19 @@ def run_pipeline(
     fuente_corregida_rows: List[List[object]] | None = None
     if diccionario_path:
         dic_primary, dic_fallback = load_diccionario(diccionario_path)
+        # Detectar haberes del InformeGasto que no están en el diccionario y agregarlos
+        codes_in_gasto: List[Dict[str, str]] = []
+        seen_codes: set[str] = set()
+        for gd in gasto_data.values():
+            for row in gd.get("detail_por_centro", []):
+                _, _cc, _proj, _tc, codigo, descripcion, _monto = row
+                if codigo not in seen_codes and codigo not in dic_fallback:
+                    codes_in_gasto.append({"codigo": codigo, "descripcion": descripcion})
+                    seen_codes.add(codigo)
+        if codes_in_gasto:
+            added_to_dic = update_diccionario(diccionario_path, codes_in_gasto)
+            if added_to_dic > 0:
+                dic_primary, dic_fallback = load_diccionario(diccionario_path)
         if dic_primary or dic_fallback:
             jornada_map = build_jornada_map(process_files)
             fuente_corregida_rows = recalculate_fuentes(
