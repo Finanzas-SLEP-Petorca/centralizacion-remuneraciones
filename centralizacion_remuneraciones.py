@@ -895,9 +895,18 @@ def build_workbook(
                 ]
             )
 
+        # ── Aportes patronales HABER ──────────────────────────────────────────
+        # Usamos InformeGasto (misma fuente que el DEBE) para los códigos 320xx.
+        # Esto evita diferencias cuando CAS Chile proratea de forma ligeramente
+        # distinta entre el Maestro y el InformeGasto (ej. COTIZ. EXPECTATIVAS).
         employer_grouped: Dict[Tuple[str, str], float] = defaultdict(float)
-        for process_name, codigo, descripcion, monto in p["employer_credit_rows"]:
-            employer_grouped[(codigo, descripcion)] += monto
+        for _, _proj, _tc, codigo, descripcion, monto in g["detail"]:
+            if codigo.startswith(EMPLOYER_PREFIX):
+                employer_grouped[(codigo, descripcion)] += monto
+        # Fallback: si InformeGasto no tiene patronales, usar Maestro
+        if not employer_grouped:
+            for _pn, codigo, descripcion, monto in p["employer_credit_rows"]:
+                employer_grouped[(codigo, descripcion)] += monto
         for (codigo, descripcion), monto in sorted(employer_grouped.items()):
             employer_detail.append([process_name, codigo, descripcion, round(monto, 2)])
             mapping = mapping_lookup.get(("HABER", "APORTE_PATRONAL", "", codigo), {})
@@ -917,7 +926,18 @@ def build_workbook(
                 ]
             )
 
-        liquid_amount = round(sum(row[3] for row in p["liquid_rows"]), 2)
+        # ── Líquido a pago ────────────────────────────────────────────────────
+        # Calculamos el líquido como residuo: DEBE_total – descuentos – patronal,
+        # lo que absorbe diferencias de redondeo internas de CAS Chile (≤ ~10 $).
+        debe_process = round(g["total_gasto_real"], 2)
+        desc_process = round(sum(m for _, c, d, m in p["discount_credit_rows"]), 2)
+        patron_process = round(sum(employer_grouped.values()), 2)
+        liquid_amount_maestro = round(sum(row[3] for row in p["liquid_rows"]), 2)
+        residuo = round(debe_process - desc_process - patron_process - liquid_amount_maestro, 2)
+        # Solo absorber diferencias pequeñas de redondeo (≤ 10 pesos).
+        # Si la diferencia es mayor, dejar el monto original (algo más está mal).
+        liquid_amount = round(liquid_amount_maestro + residuo, 2) if abs(residuo) <= 10 else liquid_amount_maestro
+
         liquid_detail.append([process, LIQUIDO_CODE, "LIQUIDO A PAGO", liquid_amount])
         mapping = mapping_lookup.get(("HABER", "LIQUIDO", "", LIQUIDO_CODE), {})
         asiento.append(
