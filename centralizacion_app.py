@@ -135,10 +135,16 @@ class App(tk.Tk):
 
         paths_frame = ttk.LabelFrame(container, text="Archivos auxiliares", padding=8)
         paths_frame.pack(fill="x", pady=8)
-        self.mapeo_excel = SinglePath(paths_frame, "Mapeo Excel", [("Excel", "*.xlsx")])
+        self.mapeo_excel = SinglePath(paths_frame, "Mapeo maestro", [("Excel", "*.xlsx")])
         self.mapeo_excel.grid(row=0, column=0, sticky="ew", pady=4)
+        self.diccionario = SinglePath(
+            paths_frame,
+            "Diccionario Haberes (opcional)",
+            [("Excel", "*.xlsx")],
+        )
+        self.diccionario.grid(row=1, column=0, sticky="ew", pady=4)
         self.salida_dir = SinglePath(paths_frame, "Carpeta salida", [], directory=True)
-        self.salida_dir.grid(row=1, column=0, sticky="ew", pady=4)
+        self.salida_dir.grid(row=2, column=0, sticky="ew", pady=4)
         paths_frame.columnconfigure(0, weight=1)
 
         actions = ttk.Frame(container)
@@ -157,6 +163,13 @@ class App(tk.Tk):
         self.salida_dir.var.set(str(default_output))
         master_default = Path(__file__).resolve().parent / "mapeo_maestro.xlsx"
         self.mapeo_excel.var.set(str(master_default))
+        dic_default = (
+            Path(r"C:\Users\wilson.rojas\OneDrive - SERVICIO LOCAL DE EDUCACIÓN PÚBLICA DE PETORCA")
+            / "SAF_SPYCG SLEP Petorca - Documentos"
+            / "Diccionario Haberes por Fuente Financiamiento.xlsx"
+        )
+        if dic_default.exists():
+            self.diccionario.var.set(str(dic_default))
 
     def append_log(self, text: str):
         self.log.insert(tk.END, text + "\n")
@@ -196,6 +209,7 @@ class App(tk.Tk):
                 mapeo_excel=str(mapping_excel),
                 title_text=title_text,
                 asiento_files=self.asientos.paths,
+                diccionario_path=self.diccionario.var.get().strip(),
             )
 
             self.after(

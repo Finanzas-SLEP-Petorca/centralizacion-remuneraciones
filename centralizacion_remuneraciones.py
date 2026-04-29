@@ -23,6 +23,21 @@ LIQUIDO_CODE = "30003"
 EMPLOYER_PREFIX = "320"
 TOTAL_PREFIX = "300"
 
+FUENTE_COLS = ["GENERAL", "SEP", "PIE", "APORTE FISCAL", "FAEP"]
+FUENTE_TO_PROYECTO = {
+    "GENERAL": "SUBVENCION NORMAL",
+    "SEP": "PROYECTO SEP",
+    "PIE": "PROYECTO PIE",
+    "APORTE FISCAL": "APORTE FISCAL",
+    "FAEP": "FAEP",
+}
+_CAS_PROYECTOS = frozenset({"SUBVENCION NORMAL", "PROYECTO SEP", "PROYECTO PIE"})
+# normalized_key("ASISTENTE EDUCACION") = "asistenteeducacion"
+_TIPO_TO_ESCALAFON = {
+    "asistenteeducacion": "ASISTENTE DE LA EDUCACION",
+    "docente": "DOCENTE",
+}
+
 
 @dataclass
 class Paths:
@@ -191,30 +206,39 @@ def aggregate_gasto(path: str):
     code_idx = find_header_index(headers, "Código", "Codigo")
     description_idx = find_header_index(headers, "Descripción", "Descripcion")
     project_idx = find_header_index(headers, "Proyecto")
+    centro_costo_idx = find_header_index(headers, "Centro Costo")
     tipo_cargo_idx = find_header_index(headers, "Tipo de Cargo")
     monto_idx = find_header_index(headers, "Monto Debe")
 
     grouped: Dict[Tuple[str, str, str, str], float] = defaultdict(float)
+    grouped_por_centro: Dict[Tuple[str, str, str, str, str], float] = defaultdict(float)
     raw_total = 0.0
     for row in rows:
         raw_code = row[code_idx]
         code = str(int(raw_code)) if isinstance(raw_code, float) else normalize_text(raw_code)
         description = normalize_text(row[description_idx])
         project = normalize_text(row[project_idx])
+        centro_costo = normalize_text(row[centro_costo_idx])
         tipo_cargo = normalize_text(row[tipo_cargo_idx]).upper()
         if not code or not description or description.upper() == "TOTALES:":
             continue
         amount = float(row[monto_idx] or 0)
         raw_total += amount
         grouped[(project, tipo_cargo, code, description)] += amount
+        grouped_por_centro[(centro_costo, project, tipo_cargo, code, description)] += amount
 
     detail = [
         (process, project, tipo_cargo, code, description, round(amount, 2))
         for (project, tipo_cargo, code, description), amount in sorted(grouped.items())
     ]
+    detail_por_centro = [
+        (process, cc, project, tipo_cargo, code, description, round(amount, 2))
+        for (cc, project, tipo_cargo, code, description), amount in sorted(grouped_por_centro.items())
+    ]
     return {
         "process": process,
         "detail": detail,
+        "detail_por_centro": detail_por_centro,
         "total_gasto_original": round(raw_total, 2),
         "total_gasto_real": round(raw_total, 2),
     }
@@ -373,6 +397,160 @@ def load_mapping_workbook(path: Path) -> Dict[Tuple[str, str, str, str], Dict[st
             "observacion": data.get("observacion", ""),
         }
     return mapping
+
+
+def load_diccionario(
+    path: str,
+) -> Tuple[Dict[Tuple[str, str], Dict[str, int]], Dict[str, Dict[str, int]]]:
+    """
+    Carga el diccionario de haberes por fuente de financiamiento.
+    Retorna (primary, fallback):
+      primary  → {(codigo, normalized_descripcion): {GENERAL, SEP, PIE, APORTE FISCAL, FAEP}}
+      fallback → {codigo: OR de todas las filas con ese código}
+    """
+    if not path or not Path(path).exists():
+        return {}, {}
+    from openpyxl import load_workbook as _lw
+
+    wb = _lw(path, data_only=True)
+    ws = wb.active
+    raw_headers = [normalize_text(c.value) for c in ws[1]]
+    col_idx = {normalized_key(h): i for i, h in enumerate(raw_headers)}
+
+    codigo_col = col_idx.get("codigo")
+    desc_col = col_idx.get("descripcion")
+    if codigo_col is None:
+        return {}, {}
+
+    primary: Dict[Tuple[str, str], Dict[str, int]] = {}
+    fallback: Dict[str, Dict[str, int]] = {}
+
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        raw_code = row[codigo_col]
+        if raw_code is None:
+            continue
+        codigo = str(int(raw_code)) if isinstance(raw_code, float) else normalize_text(str(raw_code))
+        if not codigo:
+            continue
+        desc = normalize_text(row[desc_col]) if desc_col is not None else ""
+        flags: Dict[str, int] = {}
+        for fuente in FUENTE_COLS:
+            cidx = col_idx.get(normalized_key(fuente))
+            val = (row[cidx] if cidx is not None else None) or 0
+            flags[fuente] = int(val)
+        primary[(codigo, normalized_key(desc))] = flags
+        existing = fallback.get(codigo, {f: 0 for f in FUENTE_COLS})
+        fallback[codigo] = {f: max(existing.get(f, 0), flags[f]) for f in FUENTE_COLS}
+
+    return primary, fallback
+
+
+def build_jornada_map(maestro_paths: List[str]) -> Dict[Tuple[str, str], Dict[str, float]]:
+    """
+    Lee la JORNADA del Encabezado de cada Maestro.
+    Retorna {(centro_costo, escalafon): {proyecto: total_jornada}}
+    """
+    result: Dict[Tuple[str, str], Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for path in maestro_paths:
+        book = safe_open_workbook(path)
+        encabezado = None
+        for name in book.sheet_names():
+            if "encabezado" in normalized_key(name):
+                encabezado = book.sheet_by_name(name)
+                break
+        if encabezado is None:
+            continue
+        headers = [normalize_text(encabezado.cell_value(0, c)) for c in range(encabezado.ncols)]
+        try:
+            cc_idx = find_header_index(headers, "CENTRO DE COSTOS")
+            esc_idx = find_header_index(headers, "ESCALAFON")
+            proj_idx = find_header_index(headers, "PROYECTO")
+            jorn_idx = find_header_index(headers, "JORNADA")
+        except KeyError:
+            continue
+        for r in range(1, encabezado.nrows):
+            cc = normalize_text(encabezado.cell_value(r, cc_idx))
+            esc = normalize_text(encabezado.cell_value(r, esc_idx))
+            proj = normalize_text(encabezado.cell_value(r, proj_idx))
+            jorn = encabezado.cell_value(r, jorn_idx)
+            if not cc or not esc or not proj or not isinstance(jorn, (int, float)):
+                continue
+            result[(cc, esc)][proj] += float(jorn)
+    return {k: dict(v) for k, v in result.items()}
+
+
+def recalculate_fuentes(
+    gasto_data: Dict[str, dict],
+    jornada_map: Dict[Tuple[str, str], Dict[str, float]],
+    dic_primary: Dict[Tuple[str, str], Dict[str, int]],
+    dic_fallback: Dict[str, Dict[str, int]],
+) -> List[List[object]]:
+    """
+    Recalcula la distribución por fuente de financiamiento usando el diccionario.
+    Retorna filas para la hoja FuenteCorregida:
+    [Proceso, Centro_Costo, Tipo_Cargo, Codigo, Descripcion,
+     Fuente, Monto_CAS, Monto_Corregido, Diferencia]
+    """
+    rows = []
+    _default_flags = {f: 0 for f in FUENTE_COLS}
+
+    for process, gdata in gasto_data.items():
+        cas_amounts: Dict[Tuple[str, str, str, str, str], float] = defaultdict(float)
+        total_amounts: Dict[Tuple[str, str, str, str], float] = defaultdict(float)
+
+        for _, cc, project, tipo_cargo, codigo, descripcion, monto in gdata.get("detail_por_centro", []):
+            key4 = (cc, tipo_cargo, codigo, descripcion)
+            cas_amounts[(cc, tipo_cargo, codigo, descripcion, project)] += monto
+            total_amounts[key4] += monto
+
+        for cc, tipo_cargo, codigo, descripcion in sorted(total_amounts):
+            total = total_amounts[(cc, tipo_cargo, codigo, descripcion)]
+            entry = (
+                dic_primary.get((codigo, normalized_key(descripcion)))
+                or dic_fallback.get(codigo)
+                or _default_flags
+            )
+            eligible = [f for f in FUENTE_COLS if entry.get(f, 0) == 1]
+            if not eligible:
+                eligible = ["GENERAL"]
+
+            eligible_cas = [f for f in eligible if FUENTE_TO_PROYECTO[f] in _CAS_PROYECTOS]
+            eligible_new = [f for f in eligible if FUENTE_TO_PROYECTO[f] not in _CAS_PROYECTOS]
+
+            corrected: Dict[str, float] = {}
+            if eligible_new and not eligible_cas:
+                share = round(total / len(eligible_new), 2)
+                for f in eligible_new:
+                    corrected[FUENTE_TO_PROYECTO[f]] = share
+            else:
+                escalafon = _TIPO_TO_ESCALAFON.get(normalized_key(tipo_cargo), tipo_cargo)
+                jornadas = jornada_map.get((cc, escalafon), {})
+                eligible_proyectos = [FUENTE_TO_PROYECTO[f] for f in eligible_cas]
+                elig_jorn = {p: jornadas.get(p, 0.0) for p in eligible_proyectos}
+                total_jorn = sum(elig_jorn.values())
+                if total_jorn > 0:
+                    for p in eligible_proyectos:
+                        corrected[p] = round(total * elig_jorn[p] / total_jorn, 2)
+                else:
+                    share = round(total / len(eligible_proyectos), 2)
+                    for p in eligible_proyectos:
+                        corrected[p] = share
+
+            all_fuentes: set[str] = set()
+            for k5 in cas_amounts:
+                if k5[:4] == (cc, tipo_cargo, codigo, descripcion):
+                    all_fuentes.add(k5[4])
+            all_fuentes.update(corrected.keys())
+
+            for fuente in sorted(all_fuentes):
+                monto_cas = round(cas_amounts.get((cc, tipo_cargo, codigo, descripcion, fuente), 0.0), 2)
+                monto_corr = round(corrected.get(fuente, 0.0), 2)
+                rows.append([
+                    process, cc, tipo_cargo, codigo, descripcion,
+                    fuente, monto_cas, monto_corr, round(monto_corr - monto_cas, 2),
+                ])
+
+    return rows
 
 
 def collect_mapping_candidates(
@@ -562,6 +740,7 @@ def build_workbook(
     mapping_rows: List[Dict[str, str]],
     asiento_data: Dict[str, dict] | None = None,
     title_text: str = "CENTRALIZACION REMUNERACIONES",
+    fuente_corregida_rows: List[List[object]] | None = None,
 ):
     wb = Workbook()
     wb.remove(wb.active)
@@ -826,6 +1005,16 @@ def build_workbook(
         ["Proceso", "Fuente_financiamiento", "Seccion", "Cuenta", "Concepto", "Debe"],
         funding_rows,
     )
+    if fuente_corregida_rows:
+        append_sheet(
+            wb,
+            "FuenteCorregida",
+            [
+                "Proceso", "Centro_Costo", "Tipo_Cargo", "Codigo", "Descripcion",
+                "Fuente", "Monto_CAS", "Monto_Corregido", "Diferencia",
+            ],
+            fuente_corregida_rows,
+        )
     append_sheet(
         wb,
         "PendientesCuenta",
@@ -884,6 +1073,7 @@ def run_pipeline(
     mapeo_excel: str,
     title_text: str,
     asiento_files: List[str] | None = None,
+    diccionario_path: str = "",
 ) -> Tuple[Path, Path, Path, int, int]:
     """
     Retorna (salida, mapeo_csv, mapeo_excel, nuevos_en_maestro, pendientes_sin_cuenta).
@@ -920,6 +1110,15 @@ def run_pipeline(
 
     pending_count = sum(1 for r in mapping_rows if not r["cuenta_contable"])
 
+    fuente_corregida_rows: List[List[object]] | None = None
+    if diccionario_path:
+        dic_primary, dic_fallback = load_diccionario(diccionario_path)
+        if dic_primary or dic_fallback:
+            jornada_map = build_jornada_map(process_files)
+            fuente_corregida_rows = recalculate_fuentes(
+                gasto_data, jornada_map, dic_primary, dic_fallback
+            )
+
     build_workbook(
         Path(salida),
         process_data,
@@ -928,6 +1127,7 @@ def run_pipeline(
         mapping_rows,
         asiento_data=asiento_data,
         title_text=title_text,
+        fuente_corregida_rows=fuente_corregida_rows,
     )
 
     return Path(salida).resolve(), mapping_path.resolve(), mapping_excel_path.resolve(), new_count, pending_count
