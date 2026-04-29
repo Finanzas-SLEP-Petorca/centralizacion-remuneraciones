@@ -448,11 +448,14 @@ def load_diccionario(
 def update_diccionario(path: str, new_entries: List[Dict[str, str]]) -> int:
     """
     Agrega haberes nuevos al diccionario con todos los flags en 0.
-    Nunca modifica filas existentes. Retorna la cantidad de filas agregadas.
+    Nunca modifica filas existentes.
+    Las filas nuevas se resaltan en amarillo para que el equipo las identifique.
+    Retorna la cantidad de filas agregadas.
     """
     if not path or not Path(path).exists() or not new_entries:
         return 0
     from openpyxl import load_workbook as _lw
+    from openpyxl.styles import PatternFill
 
     wb = _lw(path)
     ws = wb.active
@@ -462,29 +465,47 @@ def update_diccionario(path: str, new_entries: List[Dict[str, str]]) -> int:
     if codigo_col is None:
         return 0
 
+    # Detectar columnas de flags (contienen solo 0, 1 o None en las primeras 20 filas)
+    flag_col_indices: set[int] = set()
+    sample_end = min(ws.max_row + 1, 22)
+    for row in ws.iter_rows(min_row=2, max_row=sample_end, values_only=True):
+        for i, val in enumerate(row):
+            if val in (0, 1, 0.0, 1.0):
+                flag_col_indices.add(i)
+
+    # Recopilar códigos existentes
     existing: set[str] = set()
     for row in ws.iter_rows(min_row=2, values_only=True):
         rc = row[codigo_col]
         if rc is not None:
             existing.add(str(int(rc)) if isinstance(rc, float) else normalize_text(str(rc)))
 
-    # Detect how many columns the sheet has to fill with the right structure
+    amarillo = PatternFill(start_color="FFFF99", end_color="FFFF99", fill_type="solid")
     ncols = ws.max_column
     added = 0
+
     for entry in new_entries:
         code = entry["codigo"]
         if code in existing:
             continue
-        # Row: Código, Alias, Descripción, Codigo SUPEREDUC, GENERAL, SEP, PIE, APORTE FISCAL, FAEP, ...rest 0
+
         new_row: List[object] = [None] * ncols
+        # Código
         new_row[col_idx.get("codigo", 0)] = int(code) if code.isdigit() else code
+        # Descripción
         if "descripcion" in col_idx:
             new_row[col_idx["descripcion"]] = entry.get("descripcion", "")
-        for fuente in FUENTE_COLS:
-            cidx = col_idx.get(normalized_key(fuente))
-            if cidx is not None:
+        # Todos los flags detectados → 0
+        for cidx in flag_col_indices:
+            if cidx < ncols:
                 new_row[cidx] = 0
+
         ws.append(new_row)
+        # Resaltar la fila en amarillo
+        new_row_num = ws.max_row
+        for col in range(1, ncols + 1):
+            ws.cell(row=new_row_num, column=col).fill = amarillo
+
         existing.add(code)
         added += 1
 
@@ -1123,9 +1144,10 @@ def run_pipeline(
     asiento_files: List[str] | None = None,
     diccionario_path: str = "",
     process_name_map: Dict[str, str] | None = None,
-) -> Tuple[Path, Path, Path, int, int]:
+) -> Tuple[Path, Path, Path, int, int, int]:
     """
-    Retorna (salida, mapeo_csv, mapeo_excel, nuevos_en_maestro, pendientes_sin_cuenta).
+    Retorna (salida, mapeo_csv, mapeo_excel,
+             nuevos_en_mapeo, pendientes_sin_cuenta, nuevos_en_diccionario).
     process_name_map: {ruta_archivo: nombre_proceso} — permite forzar el proceso de cada archivo.
     """
     pnm = process_name_map or {}
@@ -1167,6 +1189,7 @@ def run_pipeline(
 
     pending_count = sum(1 for r in mapping_rows if not r["cuenta_contable"])
 
+    dic_new_count = 0
     fuente_corregida_rows: List[List[object]] | None = None
     if diccionario_path:
         dic_primary, dic_fallback = load_diccionario(diccionario_path)
@@ -1180,8 +1203,8 @@ def run_pipeline(
                     codes_in_gasto.append({"codigo": codigo, "descripcion": descripcion})
                     seen_codes.add(codigo)
         if codes_in_gasto:
-            added_to_dic = update_diccionario(diccionario_path, codes_in_gasto)
-            if added_to_dic > 0:
+            dic_new_count = update_diccionario(diccionario_path, codes_in_gasto)
+            if dic_new_count > 0:
                 dic_primary, dic_fallback = load_diccionario(diccionario_path)
         if dic_primary or dic_fallback:
             jornada_map = build_jornada_map(process_files)
@@ -1200,7 +1223,7 @@ def run_pipeline(
         fuente_corregida_rows=fuente_corregida_rows,
     )
 
-    return Path(salida).resolve(), mapping_path.resolve(), mapping_excel_path.resolve(), new_count, pending_count
+    return Path(salida).resolve(), mapping_path.resolve(), mapping_excel_path.resolve(), new_count, pending_count, dic_new_count
 
 
 def main():

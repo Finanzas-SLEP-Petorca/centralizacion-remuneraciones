@@ -18,9 +18,9 @@ PROCESS_OPTIONS = [
     "Proceso 1", "Proceso 2", "Proceso 3", "Proceso 4",
     "Proceso 5", "Proceso 6", "Proceso 7", "Proceso 8", "Proceso 9",
 ]
+# El diccionario vive en la misma carpeta que el proyecto
 _DIC_DEFAULT = (
-    Path(r"C:\Users\wilson.rojas\OneDrive - SERVICIO LOCAL DE EDUCACIÓN PÚBLICA DE PETORCA")
-    / "SAF_SPYCG SLEP Petorca - Documentos"
+    Path(__file__).resolve().parent
     / "Diccionario Haberes por Fuente Financiamiento.xlsx"
 )
 
@@ -366,7 +366,7 @@ class App(tk.Tk):
                         lst.append(p)
                         pnm[p] = pname
 
-            salida, mapping_csv_path, mapping_xlsx_path, new_count, pending = run_pipeline(
+            salida, mapping_csv_path, mapping_xlsx_path, new_count, pending, dic_new = run_pipeline(
                 process_files=process_files,
                 gasto_files=gasto_files,
                 central_files=central_files,
@@ -387,6 +387,7 @@ class App(tk.Tk):
                 new_count=new_count,
                 pending=pending,
                 n_procesos=len(valid_groups),
+                dic_new=dic_new,
             ))
 
         except Exception as exc:
@@ -395,7 +396,7 @@ class App(tk.Tk):
             self.after(0, lambda: self._failed(exc, tb))
 
     def _done(self, salida: str, mapping_xlsx: str, mapping_csv: str,
-              new_count: int, pending: int, n_procesos: int):
+              new_count: int, pending: int, n_procesos: int, dic_new: int = 0):
         self.generate_btn.configure(state="normal")
         self.status_var.set("✔ Centralización completada.")
         self.append_log(f"Procesos consolidados: {n_procesos}")
@@ -407,6 +408,12 @@ class App(tk.Tk):
         else:
             self.append_log("Mapeo maestro sin cambios (sin códigos nuevos).")
         self.append_log(f"Cuentas pendientes: {pending}")
+        if dic_new:
+            self.append_log(
+                f"⚠  Haberes NUEVOS agregados al diccionario: {dic_new}  — "
+                f"abre el diccionario y completa los 1/0 de fuente de financiamiento.")
+        else:
+            self.append_log("Diccionario de haberes sin cambios (sin códigos nuevos).")
 
         if new_count and pending:
             msg = (
@@ -423,6 +430,11 @@ class App(tk.Tk):
             msg = (
                 f"Centralización lista ({n_procesos} proceso(s)).\n"
                 f"Todas las cuentas están mapeadas.\n\n{salida}"
+            )
+        if dic_new:
+            msg += (
+                f"\n\n⚠ {dic_new} haber(es) nuevo(s) en el diccionario de fuentes.\n"
+                f"Completa los 1/0 antes del próximo proceso."
             )
         messagebox.showinfo("Completado", msg)
 
