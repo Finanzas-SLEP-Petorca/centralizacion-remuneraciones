@@ -291,10 +291,10 @@ async function initApp() {
     pyodide = await loadPyodide();
 
     progress(30, 'Instalando dependencias (openpyxl, xlrd, pypdf)…');
-    await pyodide.loadPackage(['micropip', 'openpyxl']);
+    await pyodide.loadPackage('micropip');
     await pyodide.runPythonAsync(`
 import micropip
-await micropip.install(['xlrd', 'pypdf'])
+await micropip.install(['openpyxl', 'xlrd', 'pypdf'])
 `);
 
     progress(58, 'Cargando módulo de centralización…');
