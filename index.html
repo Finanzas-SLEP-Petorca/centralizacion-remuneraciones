@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Centralización de Remuneraciones — SLEP Petorca</title>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; background: #f0f2f8; color: #1e293b; min-height: 100vh; }
+
+    /* ── Loading overlay ─────────────────────────────────────── */
+    #overlay {
+      position: fixed; inset: 0; background: #fff; z-index: 999;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    }
+    .spinner {
+      width: 52px; height: 52px; border-radius: 50%;
+      border: 5px solid #e2e8f0; border-top-color: #2563eb;
+      animation: spin .9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #overlay-msg { font-size: 14px; color: #475569; max-width: 340px; text-align: center; }
+    #overlay-bar-wrap { width: 280px; height: 5px; background: #e2e8f0; border-radius: 3px; overflow: hidden; }
+    #overlay-bar { height: 100%; width: 0; background: #2563eb; transition: width .5s ease; }
+
+    /* ── Header ──────────────────────────────────────────────── */
+    header {
+      background: linear-gradient(90deg, #1e3a6e, #2b5299);
+      color: #fff; padding: 14px 24px; display: flex; align-items: center; gap: 16px;
+      box-shadow: 0 2px 8px #0003;
+    }
+    header .logo { font-size: 22px; line-height: 1; }
+    header h1 { font-size: 16px; font-weight: 700; letter-spacing: .01em; }
+    header p  { font-size: 12px; opacity: .65; margin-top: 2px; }
+
+    /* ── Layout ──────────────────────────────────────────────── */
+    main { max-width: 1080px; margin: 0 auto; padding: 20px 16px 40px; }
+
+    .card {
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+      padding: 16px 20px; margin-bottom: 16px;
+      box-shadow: 0 1px 3px #0001;
+    }
+    .card-title {
+      font-size: 13px; font-weight: 700; color: #1e3a6e; text-transform: uppercase;
+      letter-spacing: .05em; margin-bottom: 14px; padding-bottom: 8px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+
+    /* ── Period row ──────────────────────────────────────────── */
+    .period-row { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; }
+    .period-row .field { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+    .period-row select {
+      padding: 5px 10px; border: 1px solid #cbd5e1; border-radius: 6px;
+      font-size: 13px; background: #fff; color: #1e293b; cursor: pointer;
+    }
+    .period-row select:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px #2563eb22; }
+
+    /* ── Process group ───────────────────────────────────────── */
+    .pg {
+      border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px;
+      margin-bottom: 10px; background: #fafbfe;
+      transition: border-color .2s;
+    }
+    .pg:hover { border-color: #c7d8f5; }
+    .pg-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+    .pg-head label { font-size: 13px; font-weight: 600; color: #334155; }
+    .pg-head input[type="text"] {
+      padding: 4px 10px; border: 1px solid #cbd5e1; border-radius: 5px;
+      font-size: 13px; width: 210px; color: #1e293b;
+    }
+    .pg-head input[type="text"]:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px #2563eb22; }
+    .btn-rm {
+      margin-left: auto; background: none; border: 1px solid #e2e8f0; border-radius: 5px;
+      padding: 3px 12px; cursor: pointer; color: #94a3b8; font-size: 12px; white-space: nowrap;
+    }
+    .btn-rm:hover { border-color: #fca5a5; color: #ef4444; background: #fff5f5; }
+
+    .file-grid {
+      display: grid; grid-template-columns: 160px 1fr; gap: 7px 10px; align-items: center;
+    }
+    .file-label { font-size: 12px; color: #64748b; }
+    .file-label .req { color: #2563eb; }
+    .file-wrap { display: flex; align-items: center; gap: 8px; }
+    .file-wrap input[type="file"] {
+      font-size: 12px; flex: 1; min-width: 0; cursor: pointer;
+      border: 1px dashed #cbd5e1; border-radius: 5px; padding: 4px 8px;
+      background: #fff;
+    }
+    .file-wrap input[type="file"]:hover { border-color: #2563eb; }
+    .ok-badge {
+      font-size: 11px; background: #d1fae5; color: #065f46; border-radius: 4px;
+      padding: 2px 7px; white-space: nowrap; display: none;
+    }
+
+    /* ── Aux row ─────────────────────────────────────────────── */
+    .aux-row {
+      display: flex; align-items: center; gap: 12px; font-size: 13px; margin-bottom: 10px;
+    }
+    .aux-row:last-child { margin-bottom: 0; }
+    .aux-row .aux-label { width: 200px; flex-shrink: 0; color: #475569; }
+    .aux-row input[type="file"] {
+      font-size: 12px; border: 1px dashed #cbd5e1; border-radius: 5px;
+      padding: 4px 8px; cursor: pointer; background: #fff;
+    }
+    .aux-note { font-size: 11px; color: #94a3b8; }
+    .aux-note.ok { color: #059669; }
+
+    /* ── Buttons ─────────────────────────────────────────────── */
+    .btn-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
+    .btn-add {
+      padding: 6px 14px; background: #eff6ff; border: 1px solid #bfdbfe;
+      color: #2563eb; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500;
+    }
+    .btn-add:hover { background: #dbeafe; }
+    .btn-generate {
+      padding: 10px 26px; background: #2563eb; color: #fff; border: none;
+      border-radius: 7px; cursor: pointer; font-size: 14px; font-weight: 600;
+      box-shadow: 0 2px 6px #2563eb44; transition: background .15s, opacity .15s;
+    }
+    .btn-generate:hover:not(:disabled) { background: #1d4ed8; }
+    .btn-generate:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* ── Log ─────────────────────────────────────────────────── */
+    #log {
+      font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+      font-size: 12px; line-height: 1.5;
+      background: #0f172a; color: #94a3b8;
+      padding: 14px; border-radius: 8px; height: 190px;
+      overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+      margin-bottom: 16px;
+    }
+    .log-ok   { color: #34d399; }
+    .log-warn { color: #fbbf24; }
+    .log-err  { color: #f87171; }
+
+    /* ── Results ─────────────────────────────────────────────── */
+    #results { display: none; }
+    .dl-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+    .dl-btn {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 9px 18px; background: #059669; color: #fff; text-decoration: none;
+      border-radius: 7px; font-size: 13px; font-weight: 500;
+      box-shadow: 0 2px 5px #05966944; transition: background .15s;
+    }
+    .dl-btn:hover { background: #047857; }
+    .dl-btn.alt { background: #6366f1; box-shadow: 0 2px 5px #6366f144; }
+    .dl-btn.alt:hover { background: #4f46e5; }
+    .dl-hint { font-size: 11px; color: #64748b; margin-top: 12px; line-height: 1.6; }
+    .dl-hint strong { color: #f59e0b; }
+
+    @media (max-width: 680px) {
+      .file-grid { grid-template-columns: 1fr; }
+      .file-label::after { content: ':'; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="overlay">
+  <div class="spinner"></div>
+  <p id="overlay-msg">Iniciando Python en el navegador (Pyodide)…<br>La primera carga puede tardar ~30 segundos.</p>
+  <div id="overlay-bar-wrap"><div id="overlay-bar"></div></div>
+</div>
+
+<!-- Header -->
+<header>
+  <div class="logo">📊</div>
+  <div>
+    <h1>Centralización de Remuneraciones</h1>
+    <p>SLEP Petorca — Finanzas</p>
+  </div>
+</header>
+
+<main id="app" style="display:none">
+
+  <!-- Período -->
+  <div class="card">
+    <div class="card-title">Período y Área</div>
+    <div class="period-row">
+      <div class="field">
+        <label for="area">Área:</label>
+        <select id="area">
+          <option>Educacion</option>
+          <option>Jardines</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="mes">Mes:</label>
+        <select id="mes">
+          <option>ENERO</option><option>FEBRERO</option><option>MARZO</option><option>ABRIL</option>
+          <option>MAYO</option><option>JUNIO</option><option>JULIO</option><option>AGOSTO</option>
+          <option>SEPTIEMBRE</option><option>OCTUBRE</option><option>NOVIEMBRE</option><option>DICIEMBRE</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="anio">Año:</label>
+        <select id="anio">
+          <option>2025</option><option selected>2026</option><option>2027</option><option>2028</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- Procesos -->
+  <div class="card">
+    <div class="card-title">Procesos del mes</div>
+    <div id="pg-container"></div>
+    <div class="btn-bar" style="margin-top:10px; margin-bottom:0">
+      <button class="btn-add" onclick="addProcess('Proceso Normal')">+ P.Normal</button>
+      <button class="btn-add" onclick="addProcess('Proceso 1')">+ Proceso 1</button>
+      <button class="btn-add" onclick="addProcess('Proceso 2')">+ Proceso 2</button>
+      <button class="btn-add" onclick="addProcess('Proceso 3')">+ Proceso 3</button>
+      <button class="btn-add" onclick="addProcess('Proceso 4')">+ Proceso 4</button>
+      <span style="font-size:12px;color:#94a3b8;margin-left:4px">← Cada proceso necesita Maestro e InformeGasto</span>
+    </div>
+  </div>
+
+  <!-- Auxiliares -->
+  <div class="card">
+    <div class="card-title">Archivos auxiliares</div>
+    <div class="aux-row">
+      <span class="aux-label">Mapeo maestro de cuentas:</span>
+      <input type="file" id="mapeo-upload" accept=".xlsx" onchange="onAuxUpload(this,'mapeo')">
+      <span class="aux-note" id="mapeo-note">Se cargará desde el repositorio</span>
+    </div>
+    <div class="aux-row">
+      <span class="aux-label">Diccionario de haberes:</span>
+      <input type="file" id="dic-upload" accept=".xlsx" onchange="onAuxUpload(this,'dic')">
+      <span class="aux-note" id="dic-note">Se cargará desde el repositorio</span>
+    </div>
+  </div>
+
+  <!-- Generar -->
+  <div class="btn-bar">
+    <button class="btn-generate" id="gen-btn" onclick="generate()">▶ Generar centralización</button>
+  </div>
+
+  <!-- Log -->
+  <pre id="log">Listo. Carga los archivos y presiona Generar.</pre>
+
+  <!-- Resultados -->
+  <div class="card" id="results">
+    <div class="card-title">Archivos generados</div>
+    <div class="dl-grid" id="dl-links"></div>
+    <p class="dl-hint">
+      <strong>⚠ Importante:</strong> Si el mapeo maestro fue actualizado (códigos nuevos), descárgalo
+      y súbelo al repositorio (<code>mapeo_maestro.xlsx</code>) para que todo el equipo trabaje
+      con la versión más reciente.
+    </p>
+  </div>
+
+</main>
+
+<datalist id="process-names">
+  <option value="Proceso Normal">
+  <option value="Proceso 1"><option value="Proceso 2"><option value="Proceso 3">
+  <option value="Proceso 4"><option value="Proceso 5"><option value="Proceso 6">
+  <option value="Proceso 7"><option value="Proceso 8"><option value="Proceso 9">
+</datalist>
+
+<script>
+// ─── Estado global ────────────────────────────────────────────
+let pyodide   = null;
+let pgCounter = 0;
+let mapeoAB   = null;   // ArrayBuffer del mapeo maestro
+let dicAB     = null;   // ArrayBuffer del diccionario
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+// ─── Helpers de log ───────────────────────────────────────────
+function logLine(text, cls = '') {
+  const el = document.getElementById('log');
+  const t  = String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  el.innerHTML += cls ? `<span class="${cls}">${t}</span>\n` : t + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+function logClear() { document.getElementById('log').innerHTML = ''; }
+
+// ─── Progreso de carga ────────────────────────────────────────
+function progress(pct, msg) {
+  document.getElementById('overlay-bar').style.width = pct + '%';
+  document.getElementById('overlay-msg').textContent = msg;
+}
+
+// ─── Inicialización ───────────────────────────────────────────
+async function initApp() {
+  try {
+    progress(8, 'Cargando Pyodide (Python en el navegador)…');
+    pyodide = await loadPyodide();
+
+    progress(30, 'Instalando dependencias (openpyxl, xlrd, pypdf)…');
+    await pyodide.loadPackage(['micropip', 'openpyxl']);
+    await pyodide.runPythonAsync(`
+import micropip
+await micropip.install(['xlrd', 'pypdf'])
+`);
+
+    progress(58, 'Cargando módulo de centralización…');
+    let pyCode;
+    try {
+      const r = await fetch('./centralizacion_remuneraciones.py');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      pyCode = await r.text();
+    } catch(e) {
+      throw new Error('No se pudo cargar centralizacion_remuneraciones.py: ' + e.message);
+    }
+
+    pyodide.FS.mkdirTree('/app');
+    pyodide.FS.mkdirTree('/tmp/uploads');
+    pyodide.FS.mkdirTree('/tmp/outputs');
+    pyodide.FS.writeFile('/app/centralizacion_remuneraciones.py',
+      new TextEncoder().encode(pyCode));
+
+    await pyodide.runPythonAsync(`
+import sys, os
+sys.path.insert(0, '/app')
+import centralizacion_remuneraciones as cr
+`);
+
+    progress(76, 'Cargando archivos del repositorio…');
+    await loadRepoFiles();
+
+    progress(100, 'Listo.');
+
+    // Seleccionar mes/año actual
+    const now   = new Date();
+    const meses = ['ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO',
+                   'JULIO','AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE'];
+    document.getElementById('mes').value  = meses[now.getMonth()];
+    document.getElementById('anio').value = String(now.getFullYear());
+
+    addProcess('Proceso Normal');
+
+    document.getElementById('overlay').style.display = 'none';
+    document.getElementById('app').style.display     = 'block';
+
+  } catch(e) {
+    document.getElementById('overlay-msg').textContent = '⚠ Error al iniciar: ' + e.message;
+    document.getElementById('overlay-bar').style.background = '#ef4444';
+    console.error(e);
+  }
+}
+
+async function loadRepoFiles() {
+  // Mapeo maestro
+  try {
+    const r = await fetch('./mapeo_maestro.xlsx');
+    if (r.ok) {
+      mapeoAB = await r.arrayBuffer();
+      setAuxNote('mapeo', '✓ Cargado del repositorio (' + kb(mapeoAB) + ' KB)', true);
+    }
+  } catch(e) { console.warn('mapeo_maestro.xlsx no disponible:', e); }
+
+  // Diccionario
+  try {
+    const name = 'Diccionario Haberes por Fuente Financiamiento.xlsx';
+    const r = await fetch('./' + encodeURIComponent(name));
+    if (r.ok) {
+      dicAB = await r.arrayBuffer();
+      setAuxNote('dic', '✓ Cargado del repositorio (' + kb(dicAB) + ' KB)', true);
+    }
+  } catch(e) { console.warn('Diccionario no disponible:', e); }
+}
+
+function kb(ab) { return (ab.byteLength / 1024).toFixed(1); }
+function setAuxNote(id, msg, ok = false) {
+  const el = document.getElementById(id + '-note');
+  el.textContent = msg;
+  el.classList.toggle('ok', ok);
+}
+
+// ─── Subida manual de auxiliares ─────────────────────────────
+async function onAuxUpload(input, id) {
+  if (!input.files[0]) return;
+  const ab = await input.files[0].arrayBuffer();
+  if (id === 'mapeo') { mapeoAB = ab; setAuxNote('mapeo', '✓ Archivo propio cargado (' + kb(ab) + ' KB)', true); }
+  if (id === 'dic')   { dicAB   = ab; setAuxNote('dic',   '✓ Archivo propio cargado (' + kb(ab) + ' KB)', true); }
+}
+
+// ─── Grupos de proceso ────────────────────────────────────────
+function addProcess(name) {
+  const id = ++pgCounter;
+  const div = document.createElement('div');
+  div.className = 'pg'; div.id = 'pg-' + id;
+  div.innerHTML = `
+    <div class="pg-head">
+      <label>Proceso:</label>
+      <input type="text" id="pg-name-${id}" value="${name}" list="process-names" placeholder="Nombre del proceso">
+      <button class="btn-rm" onclick="removeProcess(${id})">✕ Quitar</button>
+    </div>
+    <div class="file-grid">
+      <span class="file-label"><span class="req">*</span> Maestro (.xls)</span>
+      <div class="file-wrap">
+        <input type="file" id="pg-m-${id}" accept=".xls,.xlsx" onchange="badge(this,'pg-mb-${id}')">
+        <span class="ok-badge" id="pg-mb-${id}">✓</span>
+      </div>
+      <span class="file-label"><span class="req">*</span> InformeGasto (.xls)</span>
+      <div class="file-wrap">
+        <input type="file" id="pg-g-${id}" accept=".xls,.xlsx" onchange="badge(this,'pg-gb-${id}')">
+        <span class="ok-badge" id="pg-gb-${id}">✓</span>
+      </div>
+      <span class="file-label">Asiento (opcional)</span>
+      <div class="file-wrap">
+        <input type="file" id="pg-a-${id}" accept=".xls,.xlsx" onchange="badge(this,'pg-ab-${id}')">
+        <span class="ok-badge" id="pg-ab-${id}">✓</span>
+      </div>
+      <span class="file-label">Central CAS (opcional)</span>
+      <div class="file-wrap">
+        <input type="file" id="pg-c-${id}" accept=".xls,.xlsx" onchange="badge(this,'pg-cb-${id}')">
+        <span class="ok-badge" id="pg-cb-${id}">✓</span>
+      </div>
+    </div>`;
+  document.getElementById('pg-container').appendChild(div);
+}
+
+function removeProcess(id) {
+  if (document.querySelectorAll('.pg').length <= 1) { alert('Debe haber al menos un proceso.'); return; }
+  document.getElementById('pg-' + id)?.remove();
+}
+
+function badge(input, badgeId) {
+  const b = document.getElementById(badgeId);
+  if (b) b.style.display = input.files.length ? 'inline' : 'none';
+}
+
+// ─── Escribir archivo al FS virtual ──────────────────────────
+function writeFS(path, ab) {
+  pyodide.FS.writeFile(path, new Uint8Array(ab));
+}
+async function fileToFS(inputEl, path) {
+  if (!inputEl?.files?.[0]) return false;
+  const ab = await inputEl.files[0].arrayBuffer();
+  writeFS(path, ab);
+  return true;
+}
+
+// ─── Generar centralización ───────────────────────────────────
+async function generate() {
+  logClear();
+  document.getElementById('results').style.display = 'none';
+  document.getElementById('gen-btn').disabled = true;
+
+  try {
+    // ── 1. Recopilar procesos ──────────────────────────────────
+    const groups = [...document.querySelectorAll('.pg')];
+    if (!groups.length) throw new Error('No hay procesos cargados.');
+
+    const processFiles = [], gastoFiles = [], asientoFiles = [], centralFiles = [];
+    const pnm = {};  // {path: nombre}
+
+    for (const g of groups) {
+      const id   = g.id.replace('pg-', '');
+      const name = (document.getElementById('pg-name-' + id)?.value || 'Proceso Normal').trim();
+
+      const mIn = document.getElementById('pg-m-' + id);
+      const gIn = document.getElementById('pg-g-' + id);
+      const aIn = document.getElementById('pg-a-' + id);
+      const cIn = document.getElementById('pg-c-' + id);
+
+      if (!mIn?.files?.[0] || !gIn?.files?.[0])
+        throw new Error(`Proceso "${name}": faltan Maestro e InformeGasto.`);
+
+      const mPath = `/tmp/uploads/m_${id}.xls`;
+      const gPath = `/tmp/uploads/g_${id}.xls`;
+      await fileToFS(mIn, mPath); processFiles.push(mPath); pnm[mPath] = name;
+      await fileToFS(gIn, gPath); gastoFiles.push(gPath);   pnm[gPath] = name;
+
+      if (aIn?.files?.[0]) {
+        const ap = `/tmp/uploads/a_${id}.xls`;
+        await fileToFS(aIn, ap); asientoFiles.push(ap); pnm[ap] = name;
+      }
+      if (cIn?.files?.[0]) {
+        const cp = `/tmp/uploads/c_${id}.xls`;
+        await fileToFS(cIn, cp); centralFiles.push(cp); pnm[cp] = name;
+      }
+      logLine(`✓ Proceso "${name}" — archivos cargados al entorno`, 'log-ok');
+    }
+
+    // ── 2. Limpiar directorio de salidas ───────────────────────
+    await pyodide.runPythonAsync(`
+import shutil, os
+if os.path.exists('/tmp/outputs'): shutil.rmtree('/tmp/outputs')
+os.makedirs('/tmp/outputs', exist_ok=True)
+`);
+
+    // ── 3. Mapeo maestro ───────────────────────────────────────
+    const mapeoOut     = '/tmp/outputs/mapeo_maestro.xlsx';
+    const mapeoCsvOut  = '/tmp/outputs/mapeo_maestro.csv';
+    if (mapeoAB) {
+      writeFS(mapeoOut, mapeoAB);
+      logLine('✓ Mapeo maestro precargado', 'log-ok');
+    } else {
+      logLine('⚠ Sin mapeo maestro — se creará uno nuevo', 'log-warn');
+    }
+
+    // ── 4. Diccionario ─────────────────────────────────────────
+    const dicPath = '/tmp/uploads/diccionario.xlsx';
+    if (dicAB) { writeFS(dicPath, dicAB); logLine('✓ Diccionario de haberes cargado', 'log-ok'); }
+
+    // ── 5. Parámetros ──────────────────────────────────────────
+    const area  = document.getElementById('area').value;
+    const mes   = document.getElementById('mes').value;
+    const anio  = document.getElementById('anio').value;
+    const title = `CENTRALIZACION REMUNERACIONES ${area.toUpperCase()} ${mes} ${anio}`;
+    const fname = `centralizacion_${area.toLowerCase()}_${mes.toLowerCase()}_${anio}`;
+    const salida = `/tmp/outputs/${fname}.xlsx`;
+
+    logLine('─'.repeat(48));
+    logLine(`Título: ${title}`);
+    logLine(`Procesos: ${processFiles.length}   Archivos gasto: ${gastoFiles.length}`);
+    logLine('Procesando… por favor espera.');
+
+    // ── 6. Ejecutar pipeline ───────────────────────────────────
+    const args = {
+      process_files:  processFiles,
+      gasto_files:    gastoFiles,
+      central_files:  centralFiles,
+      asiento_files:  asientoFiles,
+      salida,
+      mapeo_csv:      mapeoCsvOut,
+      mapeo_excel:    mapeoOut,
+      title_text:     title,
+      dic_path:       dicAB ? dicPath : '',
+      pnm:            pnm,
+    };
+
+    const resultJson = await pyodide.runPythonAsync(`
+import json, traceback
+try:
+    pf  = json.loads(${JSON.stringify(JSON.stringify(args.process_files))})
+    gf  = json.loads(${JSON.stringify(JSON.stringify(args.gasto_files))})
+    cf  = json.loads(${JSON.stringify(JSON.stringify(args.central_files))})
+    af  = json.loads(${JSON.stringify(JSON.stringify(args.asiento_files))})
+    pnm = json.loads(${JSON.stringify(JSON.stringify(args.pnm))})
+
+    s, mc, mx, nc, pend, dn = cr.run_pipeline(
+        process_files    = pf,
+        gasto_files      = gf,
+        central_files    = cf if cf else None,
+        cuentas_pdf      = '',
+        salida           = ${JSON.stringify(args.salida)},
+        mapeo            = ${JSON.stringify(args.mapeo_csv)},
+        mapeo_excel      = ${JSON.stringify(args.mapeo_excel)},
+        title_text       = ${JSON.stringify(args.title_text)},
+        asiento_files    = af if af else None,
+        diccionario_path = ${JSON.stringify(args.dic_path)},
+        process_name_map = pnm,
+    )
+    json.dumps({'ok': True, 'salida': str(s), 'mapeo_xlsx': str(mx),
+                'mapeo_csv': str(mc), 'new_count': nc, 'pending': pend, 'dic_new': dn})
+except Exception as e:
+    json.dumps({'ok': False, 'error': traceback.format_exc()})
+`);
+
+    const result = JSON.parse(resultJson);
+
+    if (!result.ok) {
+      logLine('─'.repeat(48));
+      logLine('ERROR:\n' + result.error, 'log-err');
+      return;
+    }
+
+    // ── 7. Mostrar resultados ──────────────────────────────────
+    logLine('─'.repeat(48));
+    logLine('✓ Centralización generada correctamente', 'log-ok');
+    logLine(`  Procesos consolidados : ${processFiles.length}`);
+    logLine(`  Códigos nuevos mapeo  : ${result.new_count}`);
+    logLine(`  Cuentas pendientes    : ${result.pending}`);
+    if (result.dic_new > 0)
+      logLine(`  ⚠ Haberes nuevos en diccionario: ${result.dic_new}`, 'log-warn');
+    else
+      logLine('  Diccionario sin cambios');
+
+    const dlDiv = document.getElementById('dl-links');
+    dlDiv.innerHTML = '';
+
+    // Centralización
+    const salidaBytes = pyodide.FS.readFile(result.salida);
+    mkDownload(dlDiv, salidaBytes, fname + '.xlsx', '⬇ Centralización (.xlsx)', false);
+
+    // Mapeo maestro actualizado
+    try {
+      const mapeoBytes = pyodide.FS.readFile(result.mapeo_xlsx);
+      mkDownload(dlDiv, mapeoBytes, 'mapeo_maestro.xlsx', '⬇ Mapeo maestro', true);
+      mapeoAB = mapeoBytes.buffer; // actualizar en memoria para la próxima ejecución
+    } catch(e) {}
+
+    // Diccionario actualizado (si tuvo cambios)
+    if (result.dic_new > 0 && dicAB) {
+      try {
+        const updDic = pyodide.FS.readFile(dicPath);
+        mkDownload(dlDiv, updDic,
+          'Diccionario Haberes por Fuente Financiamiento.xlsx',
+          '⬇ Diccionario actualizado', true);
+        dicAB = updDic.buffer;
+      } catch(e) {}
+    }
+
+    document.getElementById('results').style.display = 'block';
+    document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
+
+  } catch(e) {
+    logLine('ERROR: ' + e.message, 'log-err');
+    console.error(e);
+  } finally {
+    document.getElementById('gen-btn').disabled = false;
+  }
+}
+
+function mkDownload(container, bytes, filename, label, alt) {
+  const blob = new Blob([bytes], { type: XLSX_MIME });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = filename;
+  a.className = 'dl-btn' + (alt ? ' alt' : '');
+  a.textContent = label;
+  container.appendChild(a);
+}
+
+// ─── Arranque ─────────────────────────────────────────────────
+initApp();
+</script>
+</body>
+</html>
