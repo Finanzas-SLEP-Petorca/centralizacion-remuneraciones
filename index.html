@@ -548,10 +548,11 @@ try:
         diccionario_path = ${JSON.stringify(args.dic_path)},
         process_name_map = pnm,
     )
-    json.dumps({'ok': True, 'salida': str(s), 'mapeo_xlsx': str(mx),
+    _r = json.dumps({'ok': True, 'salida': str(s), 'mapeo_xlsx': str(mx),
                 'mapeo_csv': str(mc), 'new_count': nc, 'pending': pend, 'dic_new': dn})
 except Exception as e:
-    json.dumps({'ok': False, 'error': traceback.format_exc()})
+    _r = json.dumps({'ok': False, 'error': traceback.format_exc()})
+_r
 `);
 
     const result = JSON.parse(resultJson);
